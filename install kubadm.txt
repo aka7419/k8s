@@ -1,0 +1,57 @@
+Error:-
+
+Err:4 https://packages.cloud.google.com/apt kubernetes-xenial InRelease
+  The following signatures couldn't be verified because the public key is not available: NO_PUBKEY B53DC80D13EDEF05
+  Reading package lists... Done
+W: GPG error: https://packages.cloud.google.com/apt kubernetes-xenial InRelease: The following signatures couldn't be verified because the public key is not available: NO_PUBKEY B53DC80D13EDEF05
+E: The repository 'http://apt.kubernetes.io kubernetes-xenial InRelease' is not signed.
+
+Solution:-
+
+Old
+- apt update
+- sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+- echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+- sudo apt update -y
+- sudo apt install kubeadm=1.20.0-00 kubectl=1.20.0-00 kubelet=1.20.0-00 -y
+- apt install docker.io -y
+
+New
+- > /etc/apt/sources.list.d/kubernetes.list
+- apt update
+- curl -fsSL "https://packages.cloud.google.com/apt/doc/apt-key.gpg" | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/kubernetes-archive-keyring.gpg
+- echo 'deb https://packages.cloud.google.com/apt kubernetes-xenial main' > /etc/apt/sources.list.d/kubernetes.list
+- sudo apt update -y
+- sudo apt install kubeadm=1.20.0-00 kubectl=1.20.0-00 kubelet=1.20.0-00 -y
+- apt install docker.io -y
+
+Complete process on kubeadm installation :- https://github.com/adpatidar/kubeadm
+
+
+
+rm /etc/containerd/config.toml
+systemctl restart containerd
+kubeadm init
+
+
+
+Your Kubernetes control-plane has initialized successfully!
+
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 192.168.50.10:6443 --token 34wrpe.g0b6xjfx5tjz9cur \
+        --discovery-token-ca-cert-hash sha256:e13771ddfae0838c93d92f991ddca274b3d9f982e887a6b65b2397e7ea341e67

@@ -1,0 +1,54 @@
+set -e
+# install prerequistes
+sudo apt update 
+sudo apt-get install -y apt-transport-https ca-certificates curl
+
+# Install docker
+for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do sudo apt-get remove $pkg; done
+
+sudo apt-get update 
+sudo apt-get install ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo   "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+"$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" |   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+
+sudo apt-get update 
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+
+# install kubernetes
+
+
+sudo usermod -a -G docker vagrant
+
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+# This overwrites any existing configuration in /etc/apt/sources.list.d/kubernetes.list
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+#curl -fsSL "https://packages.cloud.google.com/apt/doc/apt-key.gpg" | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/kubernetes-archive-keyring.gpg
+#sudo touch /etc/apt/sources.list.d/kubernetes.list
+#sudo echo 'deb https://packages.cloud.google.com/apt kubernetes-xenial main' > /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+#disabled update for these packages
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# disabled swap
+sudo swapoff -a
+
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+sudo reboot
+
+
+
+
+
+sudo mv /etc/containerd/config.toml /tmp
+sudo systemctl restart containerd
+sudo kubeadm join 192.168.50.10:6443 --token vau2z1.3lxyakivzvjt5shx --discovery-token-ca-cert-hash sha256:e13771ddfae0838c93d92f991ddca274b3d9f982e887a6b65b2397e7ea341e67
+history
