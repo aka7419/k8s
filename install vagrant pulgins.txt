@@ -1,0 +1,3 @@
+Install vagrant plugin:
+
+vagrant plugin install --plugin-clean-sources --plugin-source https://rubygems.org vagrant-disksize
