@@ -1,166 +1,130 @@
-IMAGE_NAME = "bento/ubuntu-20.04"
-N = 2
-
 Vagrant.configure("2") do |config|
-    config.ssh.insert_key = false
-    config.vm.provision :shell, privileged: true, inline: $install_common_tools       
+  config.vm.provision :shell, privileged: true, inline: $install_common_tools
 
-  
-        config.vm.define "k8s-master" do |master|
-	        master.vm.provider "virtualbox" do |v|
-              v.memory = 2048
-              v.cpus = 2	
-	    	end
-            master.vm.box = IMAGE_NAME
-            master.vm.network "private_network", ip: "192.168.50.10"
-            master.vm.hostname = "k8s-master"
-            master.vm.provision :shell, privileged: false, inline: $provision_master_node        
-            
-        end
-    
-    (1..N).each do |i|
-
-        config.vm.define "node-#{i}" do |node|
-		    node.vm.provider "virtualbox" do |v|
-              v.memory = 1024
-              v.cpus = 2
-		    end
-			node.vm.box = IMAGE_NAME
-            node.vm.network "private_network", ip: "192.168.50.#{i + 10}"
-            node.vm.hostname = "node-#{i}"
-       end
+  config.vm.define :master do |master|
+    master.vm.provider :virtualbox do |vb|
+      vb.name = "master"
+      vb.memory = 2048
+      vb.cpus = 2
     end
-	
+    master.vm.box = "ubuntu/bionic64"
+    master.disksize.size = "25GB"
+    master.vm.hostname = "master"
+    master.vm.network :private_network, ip: "10.0.0.10"
+    master.vm.provision :shell, privileged: false, inline: $provision_master_node
+  end
+
+  %w{node1 node2}.each_with_index do |name, i|
+    config.vm.define name do |node|
+      node.vm.provider "virtualbox" do |vb|
+        vb.name = "node#{i + 1}"
+        vb.memory = 2048
+        vb.cpus = 2
+      end
+      node.vm.box = "ubuntu/bionic64"
+      node.disksize.size = "25GB"
+      node.vm.hostname = name
+      node.vm.network :private_network, ip: "10.0.0.#{i + 11}"
+      node.vm.provision :shell, privileged: false, inline: <<-SHELL
+sudo /vagrant/join.sh
+echo 'Environment="KUBELET_EXTRA_ARGS=--node-ip=10.0.0.#{i + 11}"' | sudo tee -a /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+cat /vagrant/id_rsa.pub >> /home/vagrant/.ssh/authorized_keys
+sudo systemctl daemon-reload
+sudo systemctl restart kubelet
+SHELL
+    end
+  end
+
+  config.vm.provision "shell", inline: $install_multicast
 end
 
+
 $install_common_tools = <<-SCRIPT
-#!/bin/bash
-
-set -euxo pipefail
-
-cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
-overlay
-br_netfilter
+# bridged traffic to iptables is enabled for kube-router.
+cat >> /etc/ufw/sysctl.conf <<EOF
+net/bridge/bridge-nf-call-ip6tables = 1
+net/bridge/bridge-nf-call-iptables = 1
+net/bridge/bridge-nf-call-arptables = 1
 EOF
 
-sudo modprobe overlay
-sudo modprobe br_netfilter
+set -e
+IFNAME=$1
+ADDRESS="$(ip -4 addr show $IFNAME | grep "inet" | head -1 |awk '{print $2}' | cut -d/ -f1)"
+sed -e "s/^.*${HOSTNAME}.*/${ADDRESS} ${HOSTNAME} ${HOSTNAME}.local/" -i /etc/hosts
 
-# Setup required sysctl params, these persist across reboots.
-cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
-net.bridge.bridge-nf-call-iptables  = 1
-net.ipv4.ip_forward                 = 1
-net.bridge.bridge-nf-call-ip6tables = 1
+# remove ubuntu-bionic entry
+sed -e '/^.*ubuntu-bionic.*/d' -i /etc/hosts
+
+# Patch OS
+apt-get update && apt-get upgrade -y
+
+# Create local host entries
+echo "10.0.0.10 master" >> /etc/hosts
+echo "10.0.0.11 node1" >> /etc/hosts
+echo "10.0.0.12 node2" >> /etc/hosts
+
+# disable swap
+swapoff -a
+sed -i '/swap/d' /etc/fstab
+
+# Install kubeadm, kubectl and kubelet
+export DEBIAN_FRONTEND=noninteractive
+apt-get -qq install ebtables ethtool
+apt-get -qq update
+apt-get -qq install -y docker.io apt-transport-https curl
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+cat <<EOF >/etc/apt/sources.list.d/kubernetes.list
+deb http://apt.kubernetes.io/ kubernetes-xenial main
 EOF
+apt-get -qq update
+apt-get -qq install -y kubelet kubeadm kubectl
+apt-mark hold kubelet kubectl kubeadm
 
-# Apply sysctl params without reboot
-sudo sysctl --system
-
-# install prerequistes
-sudo apt-get -qq update 
-sudo apt-get -qq install -y apt-transport-https ca-certificates curl gnupg
-
-
-# Install docker
-for pkg in docker.io docker-doc docker-compose containerd runc; do sudo apt-get remove -y $pkg; done
-
-echo "*****************Install preq for docker*****************"
-#sudo apt-get -qq  update 
-sudo apt-get install -y ca-certificates curl gnupg 
-sudo install -m 0755 -d /etc/apt/keyrings 
-
-echo "***************** Gpg *****************"
-if [ ! -e /etc/apt/keyrings/docker.gpg  ]
-    then
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg  --dearmor -o /etc/apt/keyrings/docker.gpg 
-        sudo chmod a+r /etc/apt/keyrings/docker.gpg
-fi
-
-echo   "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-"$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" |   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-
-sudo apt-get -qq update 
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 
-
-# install kubernetes
-pkgs='kubeadm'
-
-sudo usermod -a -G docker vagrant
-
-if [ ! -e /etc/apt/keyrings/kubernetes-apt-keyring.gpg ]
-    then
-         curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-fi
-
-# This overwrites any existing configuration in /etc/apt/sources.list.d/kubernetes.list
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
-
-
-echo " *****************Installation de kubeadm, kubelet, kubectl*****************"
-sudo apt-get -qq update  
-sudo apt-get -qq  install -y kubelet kubeadm kubectl
-#disabled update for these packages
-
-# disabled swap
-echo " *****************disabled swap*****************"
-sudo swapoff -a
-
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
-
+# Set external DNS
+sed -i -e 's/#DNS=/DNS=8.8.8.8/' /etc/systemd/resolved.conf
+service systemd-resolved restart
 SCRIPT
 
 $provision_master_node = <<-SHELL
-echo " *****************restart docker*****************"
-sudo systemctl restart docker
+OUTPUT_FILE=/vagrant/join.sh
+KEY_FILE=/vagrant/id_rsa.pub
+rm -rf $OUTPUT_FILE
+rm -rf $KEY_FILE
+
+# Create key
+ssh-keygen -q -t rsa -b 4096 -N '' -f /home/vagrant/.ssh/id_rsa
+cat /home/vagrant/.ssh/id_rsa.pub >> /home/vagrant/.ssh/authorized_keys
+cat /home/vagrant/.ssh/id_rsa.pub > ${KEY_FILE}
+
+# Start cluster
+sudo kubeadm init --apiserver-advertise-address=10.0.0.10 --pod-network-cidr=10.244.0.0/16 | grep -Ei "kubeadm join|discovery-token-ca-cert-hash" > ${OUTPUT_FILE}
+chmod +x $OUTPUT_FILE
+
+# Configure kubectl for vagrant and root users
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+sudo mkdir -p /root/.kube
+sudo cp -i /etc/kubernetes/admin.conf /root/.kube/config
+sudo chown -R root:root /root/.kube
+
+# Fix kubelet IP
+echo 'Environment="KUBELET_EXTRA_ARGS=--node-ip=10.0.0.10"' | sudo tee -a /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+
+# Use our flannel config file so that routing will work properly
+kubectl create -f /vagrant/kube-flannel.yml
+
+# Set alias on master for vagrant and root users
+echo "alias k=/usr/bin/kubectl" >> $HOME/.bash_profile
+sudo echo "alias k=/usr/bin/kubectl" >> /root/.bash_profile
+
+# Install the etcd client
+sudo apt install etcd-client
+
 sudo systemctl daemon-reload
-sudo kubeadm reset -f
-
-echo " *****************init kubadm*****************"
-if [ -e /etc/containerd/config.toml ]
-    then
-    sudo mv /etc/containerd/config.toml /tmp
-    sudo systemctl restart containerd
-    sudo kubeadm init --apiserver-advertise-address="192.168.50.10" --apiserver-cert-extra-sans="192.168.50.10"  --node-name k8s-master --pod-network-cidr=192.168.0.0/16
-fi
-
+sudo systemctl restart kubelet
 SHELL
 
-$configure_network = <<SHELL
-#!/bin/bash
-
-set -euxo pipefail
-
-cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
-overlay
-br_netfilter
-EOF
-
-sudo modprobe overlay
-sudo modprobe br_netfilter
-
-# Setup required sysctl params, these persist across reboots.
-cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
-net.bridge.bridge-nf-call-iptables  = 1
-net.ipv4.ip_forward                 = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-EOF
-
-# Apply sysctl params without reboot
-sudo sysctl --system
-SHELL
-
-$poste_install = <<-SHELL
-
-
-if  dpkg -s $pkgs >/dev/null 2>&1
-    then   
-    sudo apt-mark unhold kubeadm kubelet
-    echo "************unhold kubeadm kubelet******************"
-fi
-
-sudo apt-mark hold kubelet kubeadm kubectl
-sudo mkdir -p /home/vagrant/.kube
-sudo cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
-sudo chown vagrant:vagrant /home/vagrant/.kube/config
+$install_multicast = <<-SHELL
+apt-get -qq install -y avahi-daemon libnss-mdns
 SHELL
